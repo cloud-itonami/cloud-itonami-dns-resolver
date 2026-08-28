@@ -195,18 +195,32 @@
   open ~160,000 simultaneous connections — a burst, not a rate, and the
   kind of pattern that gets a client rate-limited or blocked. This paces
   requests to a bounded worker-pool instead, so a large --n still finishes
-  as a sustained trickle rather than a spike."
-  [domains concurrency]
+  as a sustained trickle rather than a spike.
+
+  Also stops LAUNCHING new work once `deadline-ms` (epoch ms) passes,
+  finishes whatever is already in flight, and returns however many domains
+  it got to — a prefix of `domains`, in order (queue is FIFO, so 'how many
+  completed' and 'how far into the list we got' are the same number).
+  Measured live (2026-08-28, same concurrency, same code, only the
+  machine's unrelated load differed): 12.7 to 166.4 domains/sec, a >13x
+  swing. No fixed --n survives that range inside a fixed schedule interval
+  — a bad-load run either finishes early and idles, or blows through the
+  next tick's start. A time budget is the only thing that reliably fits a
+  schedule regardless of conditions on the day; --n becomes an upper cap
+  (don't over-fetch from the source list), not a target."
+  [domains concurrency deadline-ms]
   (js/Promise.
    (fn [resolve _reject]
      (let [queue (atom (vec (map-indexed vector domains)))
            results (atom [])
            in-flight (atom 0)]
-       (letfn [(pump! []
-                 (if (and (empty? @queue) (zero? @in-flight))
+       (letfn [(due? [] (< (.now js/Date) deadline-ms))
+               (pump! []
+                 (if (and (zero? @in-flight)
+                          (or (empty? @queue) (not (due?))))
                    (resolve @results)
                    (loop []
-                     (when (and (seq @queue) (< @in-flight concurrency))
+                     (when (and (due?) (seq @queue) (< @in-flight concurrency))
                        (let [[i d] (first @queue)]
                          (swap! queue rest)
                          (swap! in-flight inc)
@@ -224,34 +238,47 @@
 ;; hides; shallow functions make that class of bug visible on sight.
 
 (defn write-tick!
-  "Already-resolved rows (js->clj'd) + tick context -> ledger file + state
-  file + a one-line summary. The single write side-effect point for a tick."
+  "Already-resolved rows (js->clj'd, a possibly-short PREFIX of `slice` — see
+  resolve-all!'s deadline) + tick context -> ledger file + state file + a
+  one-line summary. The single write side-effect point for a tick.
+
+  Cursor advances by how many domains were actually RESOLVED, not how many
+  were fetched into `slice` — a time-budget stop must not skip the domains
+  it never got to; they stay at the front of the list for the next tick."
   [{:keys [source source-date tick-id resolved-at slice total cursor wrap? n out-root state-path]}
    resolved]
   (let [ctx {:source source :source-date source-date :tick-id tick-id :resolved-at resolved-at}
-        by-domain (into {} (map (juxt :domain identity)) resolved)
-        rows (mapcat (fn [{:keys [domain rank]}]
-                       (core/resolution-rows ctx (assoc (get by-domain domain) :rank rank)))
-                     slice)
+        rank-by-domain (into {} (map (juxt :domain :rank)) slice)
+        rows (mapcat (fn [{:keys [domain] :as r}]
+                       (core/resolution-rows ctx (assoc r :rank (get rank-by-domain domain))))
+                     resolved)
+        done (count resolved)
+        fetched (count slice)
         day (subs resolved-at 0 10)
         ledger-path (path/join out-root "ledger" day (str tick-id ".edn"))
-        next-cursor (if wrap? (mod (+ cursor (count slice)) total) (+ cursor (count slice)))]
+        next-cursor (if wrap? (mod (+ cursor done) total) (+ cursor done))]
     (write-edn! ledger-path (vec rows))
     (write-edn! state-path {:version 1 :cursor next-cursor :source source
                             :last-tick-id tick-id :last-tick-at resolved-at :list-total total})
-    ;; "caught up" means we asked for `n` and the window gave us fewer — the
-    ;; only honest signal of that, since `total` alone (esp. commoncrawl's
-    ;; ~1.2x10^8) says nothing about how close THIS tick's cursor is to EOF.
     (println (str "ledger " ledger-path " rows=" (count rows)
-                 " domains=" (count slice) " next-cursor=" next-cursor "/" total
-                 (when (and (not wrap?) n (< (count slice) n))
-                   "  (caught up to cache end this tick — refresh_cc_domains.cljs for more)")))))
+                 " resolved=" done "/" fetched " fetched (n=" n ")"
+                 " next-cursor=" next-cursor "/" total
+                 (when (and (not wrap?) n (< fetched n))
+                   "  (fetched < n: cache end — refresh_cc_domains.cljs for more)")
+                 (when (< done fetched)
+                   "  (resolved < fetched: time budget reached, not cache end)")))))
 
 (defn run! []
   (let [args (parse-args *command-line-args*)
         source (or (:source args) "tranco")
-        n (js/parseInt (or (:n args) (if (= source "commoncrawl") "40000" "200")))
-        concurrency (js/parseInt (or (:concurrency args) "80"))
+        ;; n is an upper CAP on how much to fetch from the source list, not a
+        ;; target — resolve-all! stops on --max-duration-sec first in
+        ;; practice. Set well above (peak measured throughput x duration) so
+        ;; time, not n, is normally the binding constraint: 166.4 domains/sec
+        ;; (measured 2026-08-28, concurrency 150, low-load) x 600s ~= 99,840.
+        n (js/parseInt (or (:n args) (if (= source "commoncrawl") "120000" "200")))
+        concurrency (js/parseInt (or (:concurrency args) "150"))
+        max-duration-sec (js/parseInt (or (:max-duration-sec args) "600"))
         out-root (or (:out args) "data")
         state-path (or (:state args) (path/join out-root (str "state-" source ".edn")))
         state (read-edn state-path {:version 1 :cursor 0})
@@ -269,7 +296,8 @@
                               " cursor=" cursor " slice=" (count slice)))
                  (when (empty? slice)
                    (die! 0 "0 domains in this window — nothing to resolve this tick."))
-                 (-> (resolve-all! (map :domain slice) concurrency)
+                 (-> (resolve-all! (map :domain slice) concurrency
+                                   (+ (.now js/Date) (* 1000 max-duration-sec)))
                      (.then (fn [resolved]
                               (write-tick!
                                {:source source :source-date source-date
