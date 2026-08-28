@@ -1,0 +1,3 @@
+data/state.edn
+*.log
+.DS_Store

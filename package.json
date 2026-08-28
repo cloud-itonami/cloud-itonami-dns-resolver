@@ -1,0 +1,10 @@
+{
+  "name": "cloud-itonami-dns-resolver",
+  "private": true,
+  "description": "Bounded, G7-gated active DNS resolution against Tranco's top-1M list, landing in Cloudflare R2 Data Catalog (Iceberg). 90-docs/adr/2608280900-world-scale-dns-domain-collection.edn",
+  "scripts": {
+    "resolve": "nbb scripts/resolve_tick.cljs",
+    "sync": "nbb scripts/export_and_sync.cljs",
+    "test": "nbb test/resolve_tick_test.cljs"
+  }
+}
