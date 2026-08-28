@@ -1,11 +1,14 @@
 # cloud-itonami-dns-resolver
 
-Bounded, G7-gated active DNS resolution against a slice of [Tranco's daily
-top-1M domain list](https://tranco-list.eu/), landing in Cloudflare R2 Data
-Catalog (Apache Iceberg, `cloud_itonami.dns_resolution`) — not in any wiki
-claim graph. This repo does not do enough on its own to be "SecurityTrails
-for the whole world"; it is one honestly-scoped, free, legal piece of that
-ambition. See below for what it actually covers and what it does not.
+Bounded, G7-gated active DNS resolution against a slice of one of two free,
+no-account-needed domain lists — [Tranco's daily top-1M](https://tranco-list.eu/)
+or [Common Crawl's hyperlink web-graph domain list](https://commoncrawl.org/web-graphs)
+(~120M domains, confirmed live 2026-08-28: `cc-main-2026-jun-jul-aug` carries
+119,722,885) — landing in Cloudflare R2 Data Catalog (Apache Iceberg,
+`cloud_itonami.dns_resolution`), not in any wiki claim graph. This repo does
+not do enough on its own to be "SecurityTrails for the whole world"; it is
+one honestly-scoped, free, legal piece of that ambition. See below for what
+it actually covers and what it does not.
 
 Design: `90-docs/adr/2608280900-world-scale-dns-domain-collection.edn`
 (superproject `com-junkawasaki/root`).
@@ -14,9 +17,16 @@ Design: `90-docs/adr/2608280900-world-scale-dns-domain-collection.edn`
 
 | | in scope | out of scope |
 |---|---|---|
-| Data | A / AAAA / MX / NS records for domains on Tranco's top-1M list | RDAP/WHOIS registrant data (name, org, address — see 2607309950's refusal of RDAP bulk search, which stands) |
-| Coverage | The Tranco list (actively-visited sites), cursored N domains per tick | The other ~349,000,000+ registered domains that never appear on Tranco. **"the world's most-visited ~1M domains", not "the world's domains".** |
-| Source | Free, no key: Tranco CSV + Google's DNS-over-HTTPS resolver | Commercial passive-DNS feeds (Farsight/DNSDB, SecurityTrails' own API) — out of budget scope, would need a paid contract this repo does not have |
+| Data | A / AAAA / MX / NS records for domains on Tranco's top-1M or Common Crawl's domain-graph list | RDAP/WHOIS registrant data (name, org, address — see 2607309950's refusal of RDAP bulk search, which stands) |
+| Coverage | **"the web-visible / linked-to world"** — domains Tranco sees as actively visited, or Common Crawl's crawler found linked from somewhere | Domains with **zero external footprint**: parked, dormant, brand-defensive registrations that nothing links to and no crawler has ever fetched. CT logs (yabai-actor), Tranco, and Common Crawl all share this blind spot — only a registry's own zone file (CZDS) sees these |
+| Source | Free, no account: Tranco CSV, Common Crawl's public S3 web-graph object, Google's DNS-over-HTTPS resolver | Commercial passive-DNS feeds (Farsight/DNSDB, SecurityTrails' own API), AWS Athena over Common Crawl's columnar index — both would need a paid account this repo does not have (the plain web-graph download turned out to make Athena unnecessary for bulk domain enumeration specifically) |
+
+**Scale mismatch, stated plainly.** Tranco's 10^6 domains fit in memory and
+wrap around (`cycle`) in a realistic timeframe. Common Crawl's ~1.2×10^8
+does not — cursoring through it via hourly ticks at a rate that does not
+hammer Google's public DoH resolver is a **months-to-years background
+process**, not something a bigger `--n` finishes today. See "Two domain
+sources" below for the actual numbers.
 
 **Does not claim completeness.** A domain resolving `NONE` across all 4
 record types still gets one row (`record_type = "NONE"`) — "checked, found
@@ -32,12 +42,21 @@ of data (bulk rows, not encyclopedia entries) and belongs in a columnar
 table a SQL engine can scan, not in a Worker-bundled Datalog snapshot. See
 the ADR for the full reasoning.
 
+## Two domain sources
+
+| | `--source tranco` (default) | `--source commoncrawl` |
+|---|---|---|
+| List size | ~1,000,000 | ~120,000,000 |
+| Fetched | fresh every tick (9.7MB zip) | once, into a local cache (`scripts/refresh_cc_domains.cljs`) — re-fetching 893MB every tick is not reasonable |
+| Wraps at EOF | yes (`cycle`) — a realistic weekly/monthly event at this size | **no** — reaching EOF here is not realistic on any near-term timescale; a short slice at the tail means "caught up to the cache", not an error |
+| State file | `data/state-tranco.edn` | `data/state-commoncrawl.edn` (separate cursor per source, both gitignored) |
+| Default `--n` | 200 | 2000 |
+
 ## Pipeline
 
 ```
-Tranco top-1M.csv.zip (daily, free)
-  -> unzip (shells out to `unzip`; no JS zip dependency)
-  -> cursor N domains (data/state.edn tracks the rank offset, wraps at EOF)
+domain list acquisition (source-specific — see table above)
+  -> cursor N domains (data/state-<source>.edn tracks the offset)
   -> DNS-over-HTTPS A/AAAA/MX/NS lookups (dns.google/resolve — the same
      transport app-hyakka's collect-dns! already uses)
   -> one dated EDN ledger file (data/ledger/<date>/<tick-id>.edn, git —
@@ -56,27 +75,39 @@ No live network call happens without **both**:
 This is the same shape as `cloud-itonami/yabai-actor`'s `GATE-G7`
 (`YABAI_OPERATOR_GATE`) and `cloud-itonami/ipaddress-actor`'s. A deterministic
 collector, not a `langgraph-clj` StateGraph+Governor actor (that pattern is
-for LLM proposal/veto loops; this has no LLM in it at all).
+for LLM proposal/veto loops; this has no LLM in it at all). Both the
+resolution tick and the Common Crawl cache refresh (it is also a live
+network pull) share this one gate.
 
 ```sh
 # refuses, no network call:
-nbb scripts/resolve_tick.cljs
+nbb --classpath src scripts/resolve_tick.cljs
 
-# one bounded live tick, 200 domains by default:
-DNS_RESOLVER_OPERATOR_GATE=open nbb scripts/resolve_tick.cljs --live [--n 200]
+# one bounded live tick against Tranco (200 domains by default):
+DNS_RESOLVER_OPERATOR_GATE=open nbb --classpath src scripts/resolve_tick.cljs --live
 
-# ledger (all ticks so far) -> R2 Data Catalog:
-nbb scripts/export_and_sync.cljs --root <path to com-junkawasaki/root>
+# refresh the Common Crawl cache first (893MB download, several minutes;
+# --limit N for a quick smoke test instead of the full ~120M-line file):
+DNS_RESOLVER_OPERATOR_GATE=open nbb --classpath src scripts/refresh_cc_domains.cljs --live [--limit N]
+
+# then tick against it (2000 domains by default):
+DNS_RESOLVER_OPERATOR_GATE=open nbb --classpath src scripts/resolve_tick.cljs --live --source commoncrawl
+
+# ledger (all ticks so far, both sources) -> R2 Data Catalog:
+nbb --classpath src scripts/export_and_sync.cljs --root <path to com-junkawasaki/root>
 ```
 
 ## Layout
 
 ```
-scripts/resolve_tick.cljs      one bounded tick: Tranco slice -> DoH -> ledger
-scripts/export_and_sync.cljs   ledger -> cloud_itonami.dns_resolution (Iceberg)
-data/ledger/<date>/<id>.edn    canonical, reviewable EDN — the source of truth
-data/state.edn                 cursor + last-tick metadata (gitignored — local/operator state)
-test/                          pure-function tests (CSV parsing, row shaping) — no network
+scripts/resolve_tick.cljs         one bounded tick: domain-list slice -> DoH -> ledger
+scripts/refresh_cc_domains.cljs   Common Crawl web-graph -> data/cache/cc-domains.txt
+scripts/export_and_sync.cljs      ledger -> cloud_itonami.dns_resolution (Iceberg)
+src/resolver/core.cljc            pure functions (list parsing, row shaping) — tested, no network
+data/ledger/<date>/<id>.edn       canonical, reviewable EDN — the source of truth
+data/state-<source>.edn           per-source cursor + last-tick metadata (gitignored)
+data/cache/cc-domains*            Common Crawl cache + fetch metadata (gitignored — too large for git)
+test/                             pure-function tests — no network
 ```
 
 ## Querying the result

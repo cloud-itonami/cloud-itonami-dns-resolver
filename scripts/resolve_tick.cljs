@@ -1,7 +1,18 @@
 #!/usr/bin/env nbb
 (ns resolve-tick
   "One bounded, G7-gated tick of active DNS resolution against a slice of
-  Tranco's daily top-1M domain list.
+  one of two domain lists, chosen with --source:
+
+    tranco (default)  Tranco's daily top-1M list — fetched fresh every tick
+                       (9.7MB, cheap). Wraps at EOF (cycles).
+    commoncrawl        Common Crawl's hyperlink web-graph domain list
+                       (~120M domains) — cursored from the LOCAL cache file
+                       scripts/refresh_cc_domains.cljs writes (too large to
+                       fetch fresh every tick; run that script first). Does
+                       NOT wrap — at this scale reaching EOF is not a
+                       realistic near-term event, and pretending it wraps
+                       the same way Tranco does would hide that a stalled
+                       refresh_cc_domains run silently truncates coverage.
 
   GATE-DNS_RESOLVER: offline-default. A live network pull (--live) requires
   the DNS_RESOLVER_OPERATOR_GATE env var to be set, matching the
@@ -10,9 +21,9 @@
   Pipeline (mirrors app-hyakka's resident_ingest.cljs — bounded, deterministic,
   no LLM, evidence-is-the-fact-itself):
 
-    Tranco top-1M zip (daily, free, no key)
-      -> unzip (shells out to `unzip`, no JS zip lib needed)
-      -> cursor N domains (state.edn tracks rank offset, wraps at EOF)
+    domain list (source-specific acquisition, see above)
+      -> cursor N domains (--state tracks the offset per source, wraps at EOF
+         for tranco only)
       -> DNS-over-HTTPS A/AAAA/MX/NS lookups (dns.google/resolve, same
          transport app-hyakka's collect-dns! already uses)
       -> one dated EDN ledger file (git, source of truth — CLAUDE.md
@@ -29,7 +40,8 @@
             ["node:crypto" :as crypto]
             ["node:fs" :as fs]
             ["node:os" :as os]
-            ["node:path" :as path]))
+            ["node:path" :as path]
+            ["node:readline" :as readline]))
 
 (defn die! [code msg]
   (binding [*print-fn* *print-err-fn*] (println (str "REFUSED: " msg)))
@@ -58,10 +70,6 @@
   (fs/mkdirSync (path/dirname p) #js {:recursive true})
   (fs/writeFileSync p (str (pr-str x) "\n")))
 
-;; ── Tranco fetch + unzip (shell out to `unzip`; no JS zip dependency) ───────
-
-(def tranco-url "https://tranco-list.eu/top-1m.csv.zip")
-
 (defn fetch-with-timeout! [url opts timeout-ms]
   (let [controller (js/AbortController.)
         timer (js/setTimeout #(.abort controller) timeout-ms)
@@ -69,12 +77,15 @@
     (-> (js/fetch url request-opts)
         (.finally #(js/clearTimeout timer)))))
 
-(defn fetch-tranco-csv!
-  "-> {:csv-text :sha256 :bytes}. Downloads the zip to a tmp file (fetch's
-  streaming body -> Buffer), then shells out to `unzip -p` for the CSV text —
-  Node has no zip-central-directory reader in core, and vendoring one for a
-  single call is a worse trade than one `unzip` invocation."
-  []
+;; ── source: tranco (fetch + unzip; shell out to `unzip`, no JS zip dep) ──────
+
+(def tranco-url "https://tranco-list.eu/top-1m.csv.zip")
+
+(defn tranco-window!
+  "-> {:slice [{:domain :rank}...] :total :source :source-date :list-id}.
+  Fetches the whole list fresh (cheap, 9.7MB) and cursors+cycles in memory —
+  fine at Tranco's 10^6 scale."
+  [cursor n]
   (-> (fetch-with-timeout! tranco-url #js {} 120000)
       (.then (fn [r]
                (when-not (.-ok r) (throw (js/Error. (str "HTTP " (.-status r) " " tranco-url))))
@@ -83,10 +94,56 @@
                (let [buf (js/Buffer.from ab)
                      tmp (path/join (.tmpdir os) (str "tranco-" (.now js/Date) ".zip"))]
                  (fs/writeFileSync tmp buf)
-                 (let [out (.execFileSync cp "unzip" #js ["-p" tmp]
-                                          #js {:encoding "utf8" :maxBuffer (* 64 1024 1024)})]
+                 (let [csv-text (.execFileSync cp "unzip" #js ["-p" tmp]
+                                               #js {:encoding "utf8" :maxBuffer (* 64 1024 1024)})]
                    (fs/unlinkSync tmp)
-                   {:csv-text out :sha256 (sha256 out) :bytes (.-length buf)}))))))
+                   (let [list-id (sha256 csv-text)
+                         domains (core/parse-tranco-csv csv-text)
+                         total (count domains)]
+                     (when (zero? total)
+                       (die! 2 "Tranco CSV parsed to 0 rows — refusing to report a tick against nothing"))
+                     {:slice (->> (cycle domains) (drop (mod cursor total)) (take (min n total)) vec)
+                      :total total :source "tranco-top-1m"
+                      :source-date (subs (now) 0 10) :list-id (subs list-id 0 12)})))))))
+
+;; ── source: commoncrawl (local cache; see refresh_cc_domains.cljs) ──────────
+
+(defn cc-cache-paths [out-root]
+  {:cache (path/join out-root "cache" "cc-domains.txt")
+   :meta (path/join out-root "cache" "cc-domains.meta.edn")})
+
+(defn cc-window!
+  "-> {:slice [{:domain}...] :total :source :source-date :list-id}. Streams
+  the local cache file, skipping to `cursor` and collecting up to `n` lines,
+  then STOPS READING (does not reach EOF on a 10^8-line file just to confirm
+  there was nothing left). Does not wrap: a slice shorter than `n` at the
+  tail means 'caught up to the cache's current end', not an error."
+  [out-root cursor n]
+  (let [{:keys [cache meta]} (cc-cache-paths out-root)]
+    (when-not (fs/existsSync cache)
+      (die! 2 (str "REFUSED: no " cache " — run refresh_cc_domains.cljs first")))
+    (let [m (read-edn meta {})]
+      (js/Promise.
+       (fn [resolve reject]
+         (let [rs (fs/createReadStream cache #js {:encoding "utf8"})
+               rl (readline/createInterface #js {:input rs :crlfDelay js/Infinity})
+               idx (atom 0) out (atom [])]
+           (.on rl "line"
+                (fn [line]
+                  (when (and (>= @idx cursor) (< (count @out) n) (not (str/blank? line)))
+                    (swap! out conj {:domain line}))
+                  (swap! idx inc)
+                  (when (>= (count @out) n)
+                    (.close rl) (.destroy rs))))
+           (.on rl "close"
+                (fn []
+                  (resolve {:slice @out
+                            :total (or (:domains-written m) @idx)
+                            :source "commoncrawl-hyperlinkgraph"
+                            :source-date (some-> (:fetched-at m) (subs 0 10))
+                            :list-id (:graph-id m)})))
+           (.on rs "error" reject)
+           (.on rl "error" reject)))))))
 
 ;; ── DNS-over-HTTPS resolution (same transport as app-hyakka's collect-dns!) ──
 
@@ -124,60 +181,55 @@
 (defn write-tick!
   "Already-resolved rows (js->clj'd) + tick context -> ledger file + state
   file + a one-line summary. The single write side-effect point for a tick."
-  [{:keys [tranco-date tick-id resolved-at slice sha256 total cursor out-root state-path]}
+  [{:keys [source source-date tick-id resolved-at slice total cursor wrap? out-root state-path]}
    resolved]
-  (let [ctx {:tranco-date tranco-date :tick-id tick-id :resolved-at resolved-at :sha256 sha256}
+  (let [ctx {:source source :source-date source-date :tick-id tick-id :resolved-at resolved-at}
         by-domain (into {} (map (juxt :domain identity)) resolved)
         rows (mapcat (fn [{:keys [domain rank]}]
                        (core/resolution-rows ctx (assoc (get by-domain domain) :rank rank)))
                      slice)
         day (subs resolved-at 0 10)
         ledger-path (path/join out-root "ledger" day (str tick-id ".edn"))
-        next-cursor (mod (+ cursor (count slice)) total)]
+        next-cursor (if wrap? (mod (+ cursor (count slice)) total) (+ cursor (count slice)))]
     (write-edn! ledger-path (vec rows))
-    (write-edn! state-path {:version 1 :cursor next-cursor
-                            :last-tick-id tick-id :last-tick-at resolved-at
-                            :tranco-sha256 sha256 :tranco-total total})
+    (write-edn! state-path {:version 1 :cursor next-cursor :source source
+                            :last-tick-id tick-id :last-tick-at resolved-at :list-total total})
     (println (str "ledger " ledger-path " rows=" (count rows)
-                 " domains=" (count slice) " next-cursor=" next-cursor "/" total))))
-
-(defn process-tranco!
-  "{:csv-text :sha256 :bytes} + run opts -> resolves the cursor slice and
-  writes the tick. Returns the .then/.catch-able promise."
-  [{:keys [csv-text sha256 bytes]} {:keys [n out-root state-path state]}]
-  (let [domains (core/parse-tranco-csv csv-text)
-        total (count domains)
-        _ (when (zero? total)
-            (die! 2 "Tranco CSV parsed to 0 rows — refusing to report a tick against nothing"))
-        cursor (mod (:cursor state 0) total)
-        slice (->> (cycle domains) (drop cursor) (take (min n total)) vec)
-        tick-id (str (str/replace (now) #"[:.]" "-") "-" (subs sha256 0 8))
-        tranco-date (subs (now) 0 10)]
-    (println (str "tranco: " total " domains, sha256=" (subs sha256 0 12)
-                 ", bytes=" bytes ", cursor=" cursor ", slice=" (count slice)))
-    (-> (js/Promise.all (clj->js (map resolve-domain! (map :domain slice))))
-        (.then (fn [resolved]
-                 (write-tick! {:tranco-date tranco-date :tick-id tick-id
-                               :resolved-at (now) :slice slice :sha256 sha256
-                               :total total :cursor cursor :out-root out-root
-                               :state-path state-path}
-                              (js->clj resolved :keywordize-keys true)))))))
+                 " domains=" (count slice) " next-cursor=" next-cursor "/" total
+                 (when (and (not wrap?) (< (count slice) (max 1 (- total cursor))))
+                   "  (caught up to cache end this tick — refresh_cc_domains.cljs for more)")))))
 
 (defn run! []
   (let [args (parse-args *command-line-args*)
-        n (js/parseInt (or (:n args) "200"))
+        source (or (:source args) "tranco")
+        n (js/parseInt (or (:n args) (if (= source "commoncrawl") "2000" "200")))
         out-root (or (:out args) "data")
-        state-path (or (:state args) (path/join out-root "state.edn"))
+        state-path (or (:state args) (path/join out-root (str "state-" source ".edn")))
         state (read-edn state-path {:version 1 :cursor 0})
+        cursor (:cursor state 0)
         gate (some-> (env "DNS_RESOLVER_OPERATOR_GATE") str/lower-case)]
     (when-not (:live args)
       (die! 0 "--live not set (GATE-DNS_RESOLVER, offline-default). No network call made."))
     (when-not (= gate "open")
       (die! 2 "DNS_RESOLVER_OPERATOR_GATE is not \"open\" — --live alone does not authorize a live pull."))
-    (-> (fetch-tranco-csv!)
-        (.then (fn [tranco]
-                 (process-tranco! tranco {:n n :out-root out-root
-                                          :state-path state-path :state state})))
+    (when-not (#{"tranco" "commoncrawl"} source)
+      (die! 2 (str "unknown --source " source " (want tranco or commoncrawl)")))
+    (-> (if (= source "commoncrawl") (cc-window! out-root cursor n) (tranco-window! cursor n))
+        (.then (fn [{:keys [slice total source source-date list-id]}]
+                 (println (str source " list-id=" list-id " total=" total
+                              " cursor=" cursor " slice=" (count slice)))
+                 (when (empty? slice)
+                   (die! 0 "0 domains in this window — nothing to resolve this tick."))
+                 (-> (js/Promise.all (clj->js (map resolve-domain! (map :domain slice))))
+                     (.then (fn [resolved]
+                              (write-tick!
+                               {:source source :source-date source-date
+                                :tick-id (str (str/replace (now) #"[:.]" "-") "-"
+                                              (subs (or list-id (sha256 source)) 0 8))
+                                :resolved-at (now) :slice slice :total total :cursor cursor
+                                :wrap? (= source "tranco-top-1m")
+                                :out-root out-root :state-path state-path}
+                               (js->clj resolved :keywordize-keys true)))))))
         (.catch (fn [e] (die! 1 (or (.-stack e) (.-message e) (str e))))))))
 
 (run!)
