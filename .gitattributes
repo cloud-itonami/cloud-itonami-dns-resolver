@@ -1,0 +1,14 @@
+* annex.backend=MD5E
+**/.git* annex.largefiles=nothing
+
+# Only data/ledger/** goes through git-annex (B2). Everything else -- code,
+# README, config, tests -- stays plain git text, always readable/diffable
+# without `datalad get`. This is the "large EDN shard -> annex" split
+# CLAUDE.md's large-binary-datalad policy calls for: a single tick's
+# ledger file can be tens of MB (measured 2026-08-28: 120,000 domains ->
+# 158MB, over GitHub's 100MB hard limit and rejected on push), and this
+# repeats every tick for as long as the resident runs -- committing that
+# directly as plain git blobs would make .git itself the thing growing
+# unbounded, not just one file.
+* annex.largefiles=nothing
+data/ledger/** annex.largefiles=anything
