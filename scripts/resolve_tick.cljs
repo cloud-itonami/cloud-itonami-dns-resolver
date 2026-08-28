@@ -237,10 +237,25 @@
 ;; a >10-level-deep paren nest is exactly where a single extra/missing `)`
 ;; hides; shallow functions make that class of bug visible on sight.
 
+(def max-domains-per-ledger-file
+  "Hard cap on how many resolved domains go into a single ledger .edn file.
+  Found live (2026-08-28): a tick that resolved its full --n 120000 within
+  its time budget wrote ONE 158MB file, over GitHub's 100MB hard limit —
+  every push after that silently failed (GH001) and kept retrying the same
+  stuck commit forever, since nothing detected the push failure specially.
+  Measured density from that incident's manual split: ~13.2MB per 10,000
+  domains (multiple rows/domain — A/AAAA/MX/NS + a NONE-row floor). This
+  cap (10,000) targets ~13MB/file, comfortable margin under both GitHub's
+  limit and git-annex/B2's per-object cost, independent of whatever this
+  session's DataLad+B2 migration does at the transport layer — the file
+  should never be that large in the first place."
+  10000)
+
 (defn write-tick!
   "Already-resolved rows (js->clj'd, a possibly-short PREFIX of `slice` — see
-  resolve-all!'s deadline) + tick context -> ledger file + state file + a
-  one-line summary. The single write side-effect point for a tick.
+  resolve-all!'s deadline) + tick context -> one or more ledger files (see
+  max-domains-per-ledger-file) + state file + a one-line summary. The
+  single write side-effect point for a tick.
 
   Cursor advances by how many domains were actually RESOLVED, not how many
   were fetched into `slice` — a time-budget stop must not skip the domains
@@ -249,18 +264,23 @@
    resolved]
   (let [ctx {:source source :source-date source-date :tick-id tick-id :resolved-at resolved-at}
         rank-by-domain (into {} (map (juxt :domain :rank)) slice)
-        rows (mapcat (fn [{:keys [domain] :as r}]
-                       (core/resolution-rows ctx (assoc r :rank (get rank-by-domain domain))))
-                     resolved)
         done (count resolved)
         fetched (count slice)
         day (subs resolved-at 0 10)
-        ledger-path (path/join out-root "ledger" day (str tick-id ".edn"))
-        next-cursor (if wrap? (mod (+ cursor done) total) (+ cursor done))]
-    (write-edn! ledger-path (vec rows))
+        next-cursor (if wrap? (mod (+ cursor done) total) (+ cursor done))
+        chunks (partition-all max-domains-per-ledger-file resolved)
+        multi? (> (count chunks) 1)]
+    (doseq [[i chunk] (map-indexed vector chunks)]
+      (let [rows (mapcat (fn [{:keys [domain] :as r}]
+                            (core/resolution-rows ctx (assoc r :rank (get rank-by-domain domain))))
+                          chunk)
+            ledger-path (path/join out-root "ledger" day
+                                   (str tick-id (when multi? (str "-part" (inc i))) ".edn"))]
+        (write-edn! ledger-path (vec rows))
+        (println (str "ledger " ledger-path " rows=" (count rows) " domains=" (count chunk)))))
     (write-edn! state-path {:version 1 :cursor next-cursor :source source
                             :last-tick-id tick-id :last-tick-at resolved-at :list-total total})
-    (println (str "ledger " ledger-path " rows=" (count rows)
+    (println (str "tick " tick-id " files=" (count chunks)
                  " resolved=" done "/" fetched " fetched (n=" n ")"
                  " next-cursor=" next-cursor "/" total
                  (when (and (not wrap?) n (< fetched n))
