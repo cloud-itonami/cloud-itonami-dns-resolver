@@ -50,7 +50,64 @@ the ADR for the full reasoning.
 | Fetched | fresh every tick (9.7MB zip) | once, into a local cache (`scripts/refresh_cc_domains.cljs`) — re-fetching 893MB every tick is not reasonable |
 | Wraps at EOF | yes (`cycle`) — a realistic weekly/monthly event at this size | **no** — reaching EOF here is not realistic on any near-term timescale; a short slice at the tail means "caught up to the cache", not an error |
 | State file | `data/state-tranco.edn` | `data/state-commoncrawl.edn` (separate cursor per source, both gitignored) |
-| Default `--n` | 200 | 2000 |
+| Default `--n` | 200 | 40000 |
+| Default `--concurrency` | 80 | 80 |
+
+## Parallelism, request rate, and being a good citizen of a free service
+
+Every domain fires up to 4 DNS-over-HTTPS queries (A/AAAA/MX/NS). Launching
+`--n` domains as one unbounded `js/Promise.all` — the original, naive design —
+means a 40,000-domain tick opens **~160,000 simultaneous connections**. That
+is a burst, not a rate, and is exactly the shape of traffic a free public
+resolver's abuse detection looks for. `resolve-all!` in `resolve_tick.cljs`
+instead runs a **bounded worker pool** (`--concurrency`, default 80 domains
+in flight at once — so ~320 concurrent HTTP requests, not 160,000): as each
+domain's 4 queries finish, the next domain starts. A 40,000-domain tick still
+finishes as a sustained trickle over its 15-minute window, not a spike at the
+start.
+
+**Split across two resolvers.** Queries alternate, one domain at a time,
+between Google (`dns.google`) and Cloudflare (`cloudflare-dns.com`) — both
+confirmed live (2026-08-28) to speak the identical `application/dns-json` GET
+shape. This roughly halves the sustained load either free service sees for a
+given total throughput, and adds resilience (one resolver having a bad
+minute does not stall the whole tick).
+
+**Measured throughput (with an honest caveat).** Live runs against the real
+cache, 2026-08-28:
+
+| `--n` | `--concurrency` | wall time | domains/sec | machine load avg at the time |
+|---|---|---|---|---|
+| 2000 | 80 | 47.2s | 42.4 | ~150 |
+| 3000 | 150 | 88.0s | 34.1 | ~210 rising to ~310 |
+| 300 | 80 | 23.7s | 12.7 | ~358 |
+
+**These numbers are a lower bound, not a clean benchmark.** All three runs
+happened on a machine shared with many unrelated heavy processes (other
+agent sessions, a 45-minute 181%-CPU `ugrep`, a multi-day 78%-CPU renderer);
+load average ranged 150–360 during measurement, and threads compete for
+CPU just to drive the event loop and fire the next batch of requests — the
+DoH resolvers themselves were very likely idle-fast the whole time. Higher
+`--concurrency` did NOT measure faster (150 was slower than 80), which is
+consistent with local CPU contention dominating the measurement rather than
+network or resolver-side limits. **Don't read these as "the resolvers can't
+go faster than ~40/sec" — read them as "this machine, under its own
+unrelated load, sustained at least ~40/sec without visible resolver-side
+throttling or errors."** Re-measure on a quieter machine before tuning
+`--concurrency` further; the code is already built to make that a one-flag
+change.
+
+**Coverage math at the current defaults** (`--n 40000` every 15 minutes):
+
+```
+40,000 domains / tick × 96 ticks/day = 3,840,000 domains/day
+119,722,885 / 3,840,000 ≈ 31 days for one full pass
+```
+
+roughly the "finish in about a month" target, at a rate (~44 domains/sec ≈
+178 queries/sec, split ~89/sec per resolver) this repo's own measurements
+above show is comfortably sustainable — with headroom, since the measured
+numbers were themselves suppressed by unrelated local load.
 
 ## Pipeline
 
@@ -90,7 +147,8 @@ DNS_RESOLVER_OPERATOR_GATE=open nbb --classpath src scripts/resolve_tick.cljs --
 # --limit N for a quick smoke test instead of the full ~120M-line file):
 DNS_RESOLVER_OPERATOR_GATE=open nbb --classpath src scripts/refresh_cc_domains.cljs --live [--limit N]
 
-# then tick against it (2000 domains by default):
+# then tick against it (40000 domains, concurrency 80, split across 2
+# resolvers, by default — see "Parallelism, request rate" above):
 DNS_RESOLVER_OPERATOR_GATE=open nbb --classpath src scripts/resolve_tick.cljs --live --source commoncrawl
 
 # ledger (all ticks so far, both sources) -> R2 Data Catalog:
@@ -109,6 +167,34 @@ data/state-<source>.edn           per-source cursor + last-tick metadata (gitign
 data/cache/cc-domains*            Common Crawl cache + fetch metadata (gitignored — too large for git)
 test/                             pure-function tests — no network
 ```
+
+## R2 cost — snapshot expiration is on, and matters
+
+`export_and_sync.cljs` calls `datalake-sync.py`, which does a full
+`t.overwrite(tbl)` on every sync (not an incremental append — see that
+script's own docstring for why). Every overwrite is a new Iceberg snapshot,
+and **without cleanup, old snapshots' data files stay in R2 storage
+forever**, so a growing table synced hourly accumulates roughly the SUM of
+every past snapshot's size, not just the current one. Left unmanaged for a
+month against a table growing toward ~11GB (estimated: ~4×10^8 rows at the
+measured ~23 bytes/row compressed), that projects to several TB stored and
+tens of dollars/month, climbing.
+
+Fixed 2026-08-28: **catalog-level snapshot expiration is enabled on the
+`cloud-itonami-datalake` bucket** (`older-than-days 2`, `retain-last 3`) —
+free, and (as of the April 2026 R2 Data Catalog release) removes the
+now-unreferenced data files too, not just Iceberg metadata:
+
+```sh
+wrangler r2 bucket catalog snapshot-expiration enable cloud-itonami-datalake \
+  --older-than-days 2 --retain-last 3 --token "$CF_CATALOG_TOKEN"
+```
+
+With this on, storage stays bounded to roughly (live table size) × (a small
+constant for the retained recent snapshots), not an ever-growing sum —
+projected well under $1/month for this table even at full ~1.2×10^8-domain
+scale. This setting is bucket-wide, so it also benefits the other Iceberg
+tables sharing this bucket (GLEIF's, hyakka's ASN/prefix data).
 
 ## Querying the result
 
