@@ -181,7 +181,7 @@
 (defn write-tick!
   "Already-resolved rows (js->clj'd) + tick context -> ledger file + state
   file + a one-line summary. The single write side-effect point for a tick."
-  [{:keys [source source-date tick-id resolved-at slice total cursor wrap? out-root state-path]}
+  [{:keys [source source-date tick-id resolved-at slice total cursor wrap? n out-root state-path]}
    resolved]
   (let [ctx {:source source :source-date source-date :tick-id tick-id :resolved-at resolved-at}
         by-domain (into {} (map (juxt :domain identity)) resolved)
@@ -194,9 +194,12 @@
     (write-edn! ledger-path (vec rows))
     (write-edn! state-path {:version 1 :cursor next-cursor :source source
                             :last-tick-id tick-id :last-tick-at resolved-at :list-total total})
+    ;; "caught up" means we asked for `n` and the window gave us fewer — the
+    ;; only honest signal of that, since `total` alone (esp. commoncrawl's
+    ;; ~1.2x10^8) says nothing about how close THIS tick's cursor is to EOF.
     (println (str "ledger " ledger-path " rows=" (count rows)
                  " domains=" (count slice) " next-cursor=" next-cursor "/" total
-                 (when (and (not wrap?) (< (count slice) (max 1 (- total cursor))))
+                 (when (and (not wrap?) n (< (count slice) n))
                    "  (caught up to cache end this tick — refresh_cc_domains.cljs for more)")))))
 
 (defn run! []
@@ -227,7 +230,7 @@
                                 :tick-id (str (str/replace (now) #"[:.]" "-") "-"
                                               (subs (or list-id (sha256 source)) 0 8))
                                 :resolved-at (now) :slice slice :total total :cursor cursor
-                                :wrap? (= source "tranco-top-1m")
+                                :wrap? (= source "tranco-top-1m") :n n
                                 :out-root out-root :state-path state-path}
                                (js->clj resolved :keywordize-keys true)))))))
         (.catch (fn [e] (die! 1 (or (.-stack e) (.-message e) (str e))))))))
