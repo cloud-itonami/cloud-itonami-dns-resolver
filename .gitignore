@@ -1,3 +1,4 @@
-data/state.edn
+data/state*.edn
+data/cache/
 *.log
 .DS_Store
