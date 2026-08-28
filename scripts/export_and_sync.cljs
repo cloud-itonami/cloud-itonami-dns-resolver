@@ -9,12 +9,27 @@
   THIS IS A PROJECTION, NOT A PREMISE (CLAUDE.md 「消して再構築できるか」):
   data/ledger/**/*.edn is the source; this script dedups by :resolution/id
   (last file wins) and rebuilds `cloud_itonami.dns_resolution`.
-  `datalake-sync.py` always does a full `t.overwrite(tbl)` (no --replace
-  flag exists on it — that flag belongs to the OTHER writer,
-  `scripts/datalake/iceberg_writer.py`, which this script does not use),
-  so every run here is already a full rebuild from the ledger, exactly
-  like hyakka-datalake-tick.cljs's use of the same loader for the same
-  reason (a growing ledger, one droppable/rebuildable table).
+  `datalake-sync.py` always does a full `t.overwrite(tbl)` — there is no
+  separate `--replace`-flagged writer in this workspace (a prior version
+  of this docstring claimed one existed at
+  `scripts/datalake/iceberg_writer.py`; that path does not exist, checked
+  2026-08-28 — corrected rather than left to mislead the next reader).
+
+  INCREMENTAL EXPORT, NOT re-derived from scratch every run: found live
+  (2026-08-28) that re-reading and re-parsing the WHOLE historical ledger
+  every tick (cljs.reader on ~1.6GB of accumulated EDN, ~7.5s per 10MB
+  file) OOM'd the export step outright once the ledger had been running
+  long enough, and even short of OOM was headed toward minutes of wasted
+  CPU per sync that only gets worse as the ledger grows. `--out-dir`
+  persists an `accumulator.json` (id -> row, i.e. the CURRENT deduped
+  table state) and a `folded-files.json` (which ledger files are already
+  folded in) between runs — each run parses only the ledger files not yet
+  in that set, merges them into the accumulator, and syncs the full
+  accumulator (unchanged Iceberg overwrite semantics; the incrementality
+  is purely in how the payload gets BUILT, not in what gets committed).
+  First run with an empty/missing `--out-dir` bootstraps by treating
+  every ledger file as new — same cost as the old always-full-reparse
+  behavior, but paid once instead of every tick.
 
   Requires the superproject checkout for the loader — pass its root with
   --root (default: two levels up from this repo, i.e. this repo living at
@@ -57,36 +72,50 @@
    "resolved_at" (:resolution/resolved-at r) "source" (:resolution/source r)
    "source_date" (:resolution/source-date r) "tick_id" (:resolution/tick-id r)})
 
+(defn read-json [path default]
+  (if (fs/existsSync path) (js/JSON.parse (fs/readFileSync path "utf8")) default))
+
 (defn -main []
   (let [files (ledger-files ledger-dir)
         _ (when (empty? files) (die! 2 "REFUSED: 0 ledger files — an unread tree is not an empty dataset."))
-        rows (reduce (fn [acc f]
-                       (reduce (fn [acc2 r] (assoc acc2 (:resolution/id r) r))
-                              acc (edn/read-string (fs/readFileSync f "utf8"))))
-                     {} files)
-        rows (vec (vals rows))]
-    (when (empty? rows) (die! 1 "REFUSED: ledger files parsed to 0 rows."))
-    (fs/mkdirSync out-dir #js {:recursive true})
-    ;; datalake-sync.py does `json.loads(p.read_text())` — ONE JSON array per
-    ;; file, not NDJSON (that line-delimited shape belongs to the OTHER
-    ;; loader, scripts/datalake/iceberg_writer.py, which this script does
-    ;; not use).
-    (let [table-path (path/join out-dir "dns_resolution.json")
-          spec-path (path/join out-dir "dns-resolver.spec.json")]
-      (fs/writeFileSync table-path (js/JSON.stringify (clj->js (mapv row->json rows))))
-      (fs/writeFileSync spec-path
-                        (js/JSON.stringify
-                         (clj->js {:namespace "cloud_itonami"
-                                   :tables [{:file "dns_resolution.json"
-                                            :table "dns_resolution" :int_columns []}]})
-                         nil 2))
-      (println (str "export " (count files) " ledger files -> " (count rows) " rows -> " table-path))
-      (let [loader (path/join superproject-root "scripts" "datalake-sync.py")]
-        (when-not (fs/existsSync loader)
-          (die! 2 (str "REFUSED: loader not found at " loader
-                       " — pass --root <superproject checkout>")))
-        (let [r (cp/spawnSync "python3" (clj->js [loader "--spec" spec-path "--in-dir" out-dir])
-                              #js {:encoding "utf8" :stdio "inherit"})]
-          (.exit js/process (or (.-status r) 1)))))))
+        _ (fs/mkdirSync out-dir #js {:recursive true})
+        acc-path (path/join out-dir "accumulator.json")
+        folded-path (path/join out-dir "folded-files.json")
+        acc (read-json acc-path #js {})
+        folded (js/Set. (read-json folded-path #js []))
+        new-files (remove #(.has folded %) files)]
+    (println (str "LEDGER\t" (count files) " files\tfolded=" (- (count files) (count new-files))
+                 "\tnew=" (count new-files)))
+    (doseq [f new-files]
+      (doseq [r (edn/read-string (fs/readFileSync f "utf8"))]
+        (aset acc (:resolution/id r) (clj->js (row->json r))))
+      (.add folded f))
+    (when (seq new-files)
+      (fs/writeFileSync acc-path (js/JSON.stringify acc))
+      (fs/writeFileSync folded-path (js/JSON.stringify (js/Array.from folded))))
+    (let [row-count (count (js/Object.keys acc))]
+      (when (zero? row-count) (die! 1 "REFUSED: ledger files parsed to 0 rows."))
+      ;; datalake-sync.py does `json.loads(p.read_text())` — ONE JSON array
+      ;; per file, not NDJSON. The payload is the FULL current accumulator
+      ;; every run (unchanged overwrite semantics) — only the BUILDING of
+      ;; it is incremental (see docstring).
+      (let [table-path (path/join out-dir "dns_resolution.json")
+            spec-path (path/join out-dir "dns-resolver.spec.json")]
+        (fs/writeFileSync table-path (js/JSON.stringify (js/Object.values acc)))
+        (fs/writeFileSync spec-path
+                          (js/JSON.stringify
+                           (clj->js {:namespace "cloud_itonami"
+                                     :tables [{:file "dns_resolution.json"
+                                              :table "dns_resolution" :int_columns []}]})
+                           nil 2))
+        (println (str "export " (count files) " ledger files (" (count new-files) " newly folded) -> "
+                     row-count " distinct rows -> " table-path))
+        (let [loader (path/join superproject-root "scripts" "datalake-sync.py")]
+          (when-not (fs/existsSync loader)
+            (die! 2 (str "REFUSED: loader not found at " loader
+                         " — pass --root <superproject checkout>")))
+          (let [r (cp/spawnSync "python3" (clj->js [loader "--spec" spec-path "--in-dir" out-dir])
+                                #js {:encoding "utf8" :stdio "inherit"})]
+            (.exit js/process (or (.-status r) 1))))))))
 
 (-main)
