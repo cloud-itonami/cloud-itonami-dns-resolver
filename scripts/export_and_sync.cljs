@@ -17,7 +17,7 @@
   files not yet folded in, and (since point 6) sends only the rows Iceberg
   doesn't have yet, not the whole accumulator.
 
-  NINE THINGS THAT LOOKED LIKE FIXES AND WEREN'T, all found live, in order
+  TEN THINGS THAT LOOKED LIKE FIXES AND WEREN'T, all found live, in order
   (2026-08-28 unless noted):
 
   1. A first attempt kept the accumulator as a plain #js{} keyed by
@@ -184,6 +184,34 @@
      before calling into the sync step — this makes the row-Maps
      collectible on the next GC pass regardless of what the JIT would
      have inferred on its own.
+
+  10. (2026-08-29) The loader is read from the SUPERPROJECT CHECKOUT at
+     run time (`<--root>/scripts/datalake-sync.py`), so it can change
+     underneath a long-running sync. It did: while a catch-up was
+     mid-flight, that checkout was reverted to its pristine (pre-upsert)
+     version for a moment during an unrelated landing step. The next
+     chunk was written with `mode: upsert` in its spec and handed to a
+     loader that had never heard of `mode` — which silently ignored it
+     and ran its only code path, `t.overwrite(tbl)`. One 361,588-row
+     chunk replaced the whole table: 13,778,525 rows deleted in a single
+     commit. Recovered by rolling back to the pre-damage Iceberg snapshot
+     (`manage_snapshots().rollback_to_snapshot(...)`, verified with a
+     real full scan, not just metadata) — the projection was never the
+     source of truth, but the loss would still have cost hours of resync.
+     The signal was in the log the whole time and easy to miss: successful
+     upserts print `committed (upsert) ... updated=N inserted=M`, that one
+     printed bare `committed`.
+     Fixed by making a caller/loader version mismatch fail CLOSED instead
+     of degrading to overwrite: this script passes
+     `--require-incremental-support`, which an old loader rejects with
+     argparse's `unrecognized arguments` (exit 2), and the current loader
+     independently REFUSES any spec asking for a non-overwrite `mode`
+     when that flag is absent. Both directions were tested against an
+     actual pre-change loader pulled from git.
+     The general shape is one CLAUDE.md already names: an operation that
+     could not do what was asked returned the same success-looking result
+     as one that did. "Silently falls back to the destructive default" is
+     the worst possible reading of an unknown option.
 
   Requires the superproject checkout for the loader — pass its root with
   --root (default: two levels up from this repo, i.e. this repo living at
@@ -428,7 +456,8 @@
                                           :mode "upsert"
                                           :join_columns ["id"]}]})
                        nil 2))
-    (let [r (cp/spawnSync "python3" (clj->js [loader "--spec" spec-path "--in-dir" out-dir])
+    (let [r (cp/spawnSync "python3" (clj->js [loader "--spec" spec-path "--in-dir" out-dir
+                                                    "--require-incremental-support"])
                           #js {:encoding "utf8" :stdio "inherit"})
           ;; (.-status r) is nil when spawnSync couldn't even launch the
           ;; process (e.g. python3 missing) -- treat that as failure, not

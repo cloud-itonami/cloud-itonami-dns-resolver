@@ -169,7 +169,8 @@
 ;; way without restructuring the chain.
 (defn- sync-with-retry! [loader spec-path]
   (loop [attempt 1]
-    (let [r (cp/spawnSync "python3" (clj->js [loader "--spec" spec-path "--in-dir" out-dir])
+    (let [r (cp/spawnSync "python3" (clj->js [loader "--spec" spec-path "--in-dir" out-dir
+                                                    "--require-incremental-support"])
                           #js {:encoding "utf8" :stdio "inherit"})
           status (or (.-status r) 1)]
       (cond
