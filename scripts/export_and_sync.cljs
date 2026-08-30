@@ -210,7 +210,7 @@
      actual pre-change loader pulled from git.
      The general shape is one CLAUDE.md already names: an operation that
      could not do what was asked returned the same success-looking result
-     as one that did. "Silently falls back to the destructive default" is
+     as one that did. Silently falling back to the destructive default is
      the worst possible reading of an unknown option.
 
   Requires the superproject checkout for the loader — pass its root with
