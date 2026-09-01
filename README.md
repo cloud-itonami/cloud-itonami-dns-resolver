@@ -13,6 +13,13 @@ it actually covers and what it does not.
 Design: `90-docs/adr/2608280900-world-scale-dns-domain-collection.edn`
 (superproject `com-junkawasaki/root`).
 
+**Operating this thing: [`docs/operator-quickstart.md`](docs/operator-quickstart.md).**
+Every command there was run against this repo and shows its real output.
+Read it before your first live tick — it also documents two failure modes
+this README does not: the two gate refusals return *different* exit codes,
+and all but 21 of the ledger files are git-annex pointers whose content no
+clone can currently retrieve (the `git-annex` branch is not published).
+
 ## What this collects, and what it does not
 
 | | in scope | out of scope |
@@ -189,7 +196,9 @@ scripts/resolve_tick.cljs         one bounded tick: domain-list slice -> DoH -> 
 scripts/refresh_cc_domains.cljs   Common Crawl web-graph -> data/cache/cc-domains.txt
 scripts/export_and_sync.cljs      ledger -> cloud_itonami.dns_resolution (Iceberg)
 src/resolver/core.cljc            pure functions (list parsing, row shaping) — tested, no network
-data/ledger/<date>/<id>.edn       canonical, reviewable EDN — the source of truth
+data/ledger/<date>/<id>.edn       canonical EDN — the source of truth (git-annex;
+                                  reviewable only where content is present — see
+                                  docs/operator-quickstart.md step 7)
 data/state-<source>.edn           per-source cursor + last-tick metadata (gitignored)
 data/cache/cc-domains*            Common Crawl cache + fetch metadata (gitignored — too large for git)
 test/                             pure-function tests — no network
