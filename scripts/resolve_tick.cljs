@@ -36,7 +36,7 @@
   (superproject com-junkawasaki/root). No registrant/WHOIS data is touched —
   DNS resolution results only."
   (:require [cljs.reader :as edn]
-            [clojure.string :as str]
+            [kotoba.lang.text :as str]
             [resolver.core :as core]
             ["node:child_process" :as cp]
             ["node:crypto" :as crypto]
@@ -303,7 +303,7 @@
         state-path (or (:state args) (path/join out-root (str "state-" source ".edn")))
         state (read-edn state-path {:version 1 :cursor 0})
         cursor (:cursor state 0)
-        gate (some-> (env "DNS_RESOLVER_OPERATOR_GATE") str/lower-case)]
+        gate (some-> (env "DNS_RESOLVER_OPERATOR_GATE") str/lower)]
     (when-not (:live args)
       (die! 0 "--live not set (GATE-DNS_RESOLVER, offline-default). No network call made."))
     (when-not (= gate "open")

@@ -220,7 +220,7 @@
   Run:
     nbb scripts/export_and_sync.cljs [--root <superproject>] [--out-dir <dir>]"
   (:require [cljs.reader :as edn]
-            [clojure.string :as str]
+            [kotoba.lang.text :as str]
             ["node:child_process" :as cp]
             ["node:fs" :as fs]
             ["node:os" :as os]

@@ -40,7 +40,7 @@
   Run once:
     nbb scripts/catchup_sync.cljs [--out-dir <dir>] [--root <superproject>]
                                   [--shards-per-batch N (default 4)]"
-  (:require [clojure.string :as str]
+  (:require [kotoba.lang.text :as str]
             ["node:fs" :as fs]
             ["node:path" :as path]
             ["node:os" :as os]
