@@ -5,7 +5,7 @@
   in — everything here is `(map ...) -> map`, tested without a network,
   the same split app-hyakka's hyakka.ingest/resident_ingest.cljs draws
   between a connector's I/O and its pure admission logic."
-  (:require [clojure.string :as str]))
+  (:require [kotoba.lang.text :as str]))
 
 (defn parse-tranco-csv
   "\"rank,domain\\n...\" -> [{:rank int :domain str} ...], no header row."
@@ -16,7 +16,7 @@
                   (when-not (str/blank? line)
                     (let [[rank domain] (str/split line #"," 2)]
                       (when (and rank domain)
-                        {:rank (js/parseInt rank) :domain (str/lower-case (str/trim domain))}))))))
+                        {:rank (js/parseInt rank) :domain (str/lower (str/trim domain))}))))))
         (str/split-lines csv-text)))
 
 (defn cc-reversed->domain

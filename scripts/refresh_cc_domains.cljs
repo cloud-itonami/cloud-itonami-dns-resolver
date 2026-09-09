@@ -22,7 +22,7 @@
 
     # the real thing (893MB download, several minutes, ~2-3GB written):
     DNS_RESOLVER_OPERATOR_GATE=open nbb --classpath src scripts/refresh_cc_domains.cljs --live"
-  (:require [clojure.string :as str]
+  (:require [kotoba.lang.text :as str]
             [resolver.core :as core]
             ["node:fs" :as fs]
             ["node:path" :as path]
@@ -79,7 +79,7 @@
         cache-path (path/join out-root "cache" "cc-domains.txt")
         meta-path (path/join out-root "cache" "cc-domains.meta.edn")
         limit (some-> (:limit args) js/parseInt)
-        gate (some-> (env "DNS_RESOLVER_OPERATOR_GATE") str/lower-case)]
+        gate (some-> (env "DNS_RESOLVER_OPERATOR_GATE") str/lower)]
     (when-not (:live args)
       (die! 0 "--live not set (GATE-DNS_RESOLVER, offline-default). No network call made."))
     (when-not (= gate "open")
