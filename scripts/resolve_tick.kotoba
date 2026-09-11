@@ -1,4 +1,4 @@
-#!/usr/bin/env nbb
+#!/usr/bin/env kbb
 (ns resolve-tick
   "One bounded, G7-gated tick of active DNS resolution against a slice of
   one of two domain lists, chosen with --source:

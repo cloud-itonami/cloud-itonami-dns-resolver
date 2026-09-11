@@ -1,4 +1,4 @@
-#!/usr/bin/env nbb
+#!/usr/bin/env kbb
 (ns export-and-sync
   "data/ledger/**/*.edn -> NDJSON -> Cloudflare R2 Data Catalog (Apache
   Iceberg), reusing the ALREADY-GENERAL superproject loader
@@ -218,7 +218,7 @@
   <superproject>/orgs/cloud-itonami/dns-resolver-actor).
 
   Run:
-    nbb scripts/export_and_sync.cljs [--root <superproject>] [--out-dir <dir>]"
+    kbb --backend sci scripts/export_and_sync.cljk [--root <superproject>] [--out-dir <dir>]"
   (:require [cljs.reader :as edn]
             [kotoba.lang.text :as str]
             ["node:child_process" :as cp]
