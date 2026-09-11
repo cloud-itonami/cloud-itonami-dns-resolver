@@ -1,4 +1,4 @@
-#!/usr/bin/env nbb
+#!/usr/bin/env kbb
 (ns catchup-sync
   "ONE-TIME streaming catch-up: syncs accumulator-shards/*.ndjson (the
   full deduped DNS resolution accumulator, written by export_and_sync.cljs)
@@ -38,7 +38,7 @@
   wasted work.
 
   Run once:
-    nbb scripts/catchup_sync.cljs [--out-dir <dir>] [--root <superproject>]
+    kbb --backend sci scripts/catchup_sync.cljk [--out-dir <dir>] [--root <superproject>]
                                   [--shards-per-batch N (default 4)]"
   (:require [kotoba.lang.text :as str]
             ["node:fs" :as fs]

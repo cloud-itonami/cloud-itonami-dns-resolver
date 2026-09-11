@@ -1,4 +1,4 @@
-#!/usr/bin/env nbb
+#!/usr/bin/env kbb
 (ns refresh-cc-domains
   "Downloads Common Crawl's latest hyperlink web-graph domain-vertices file
   and writes a flat plain-text domain list — one domain per line — that
@@ -15,13 +15,13 @@
 
   Run:
     # refuses, no network call:
-    nbb --classpath src scripts/refresh_cc_domains.cljs
+    kbb --backend sci --classpath src scripts/refresh_cc_domains.cljs
 
     # small validation run (first 10k parsed lines only):
-    DNS_RESOLVER_OPERATOR_GATE=open nbb --classpath src scripts/refresh_cc_domains.cljs --live --limit 10000
+    DNS_RESOLVER_OPERATOR_GATE=open kbb --backend sci --classpath src scripts/refresh_cc_domains.cljs --live --limit 10000
 
     # the real thing (893MB download, several minutes, ~2-3GB written):
-    DNS_RESOLVER_OPERATOR_GATE=open nbb --classpath src scripts/refresh_cc_domains.cljs --live"
+    DNS_RESOLVER_OPERATOR_GATE=open kbb --backend sci --classpath src scripts/refresh_cc_domains.cljs --live"
   (:require [kotoba.lang.text :as str]
             [resolver.core :as core]
             ["node:fs" :as fs]

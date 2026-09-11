@@ -66,10 +66,10 @@ drwxr-xr-x 13 …  416 …  .git          # ← a directory. they can.
 authorize anything:
 
 ```sh
-$ nbb --classpath src scripts/resolve_tick.cljs
+$ kbb --backend sci --classpath src scripts/resolve_tick.cljs
 REFUSED: --live not set (GATE-DNS_RESOLVER, offline-default). No network call made.
 
-$ nbb --classpath src scripts/resolve_tick.cljs --live
+$ kbb --backend sci --classpath src scripts/resolve_tick.cljs --live
 REFUSED: DNS_RESOLVER_OPERATOR_GATE is not "open" — --live alone does not authorize a live pull.
 ```
 
@@ -96,7 +96,7 @@ identically.
 Pure functions only — list parsing and row shaping. No network, no gate.
 
 ```sh
-$ nbb --classpath src test/resolve_tick_test.cljs
+$ kbb --backend sci --classpath src test/resolve_tick_test.cljs
 
 Testing resolve-tick-test
 
@@ -111,7 +111,7 @@ small: the defaults (`--n 200` for tranco) are sized for the resident
 timer, not for a human checking that the thing works.
 
 ```sh
-$ DNS_RESOLVER_OPERATOR_GATE=open nbb --classpath src scripts/resolve_tick.cljs \
+$ DNS_RESOLVER_OPERATOR_GATE=open kbb --backend sci --classpath src scripts/resolve_tick.cljs \
     --live --n 25 --concurrency 10 --max-duration-sec 60
 tranco-top-1m list-id=785430c12d60 total=1000000 cursor=0 slice=25
 ledger data/ledger/2026-09-01/2026-09-01T20-07-39-447Z-785430c1.edn rows=237 domains=25
@@ -138,7 +138,7 @@ Do not trust the summary line alone — read the file back with a reader,
 not with `grep`:
 
 ```sh
-$ nbb --classpath src -e '
+$ kbb --backend sci --classpath src -e '
 (ns v (:require ["fs" :as fs] [clojure.edn :as edn]))
 (def rows (edn/read-string (fs/readFileSync "data/ledger/2026-09-01/2026-09-01T20-07-39-447Z-785430c1.edn" "utf8")))
 (println "rows=" (count rows))
@@ -170,7 +170,7 @@ Running a second tick resumes from there rather than repeating work
 (walked, 2026-09-01: `cursor 0 → 25 → 35`):
 
 ```sh
-$ DNS_RESOLVER_OPERATOR_GATE=open nbb --classpath src scripts/resolve_tick.cljs \
+$ DNS_RESOLVER_OPERATOR_GATE=open kbb --backend sci --classpath src scripts/resolve_tick.cljs \
     --live --n 10 --concurrency 10 --max-duration-sec 45
 tranco-top-1m list-id=785430c12d60 total=1000000 cursor=25 slice=10
 ledger data/ledger/2026-09-01/2026-09-01T20-08-14-783Z-785430c1.edn rows=89 domains=10
@@ -240,7 +240,7 @@ document has not walked those** — see step 9.
 ## 8. Export to Iceberg
 
 ```sh
-nbb --classpath src scripts/export_and_sync.cljs --root <path to com-junkawasaki/root>
+kbb --backend sci --classpath src scripts/export_and_sync.cljs --root <path to com-junkawasaki/root>
 ```
 
 Preconditions, all of which must hold — but note they are **not checked in
@@ -250,7 +250,7 @@ the order they are listed**, which matters when several are unmet at once:
    (walked 2026-09-01, exit **2**):
 
    ```sh
-   $ nbb --classpath src scripts/export_and_sync.cljs --root /tmp/x
+   $ kbb --backend sci --classpath src scripts/export_and_sync.cljs --root /tmp/x
    REFUSED: 0 ledger files — an unread tree is not an empty dataset.
    ```
 
@@ -262,7 +262,7 @@ the order they are listed**, which matters when several are unmet at once:
    succeeds (walked 2026-09-01, exit **2**):
 
    ```sh
-   $ nbb --classpath src scripts/export_and_sync.cljs --root /tmp/definitely-not-a-superproject
+   $ kbb --backend sci --classpath src scripts/export_and_sync.cljs --root /tmp/definitely-not-a-superproject
    REFUSED: loader not found at /tmp/definitely-not-a-superproject/scripts/datalake-sync.py — pass --root <superproject checkout>
    ```
 
@@ -273,7 +273,7 @@ content **never reaches the `--root` check** — you get a raw `stat` failure
 instead of either refusal. Walked 2026-09-01 in this repo's own tree:
 
 ```sh
-$ nbb --classpath src scripts/export_and_sync.cljs
+$ kbb --backend sci --classpath src scripts/export_and_sync.cljs
 ----- Error --------------------------------------
 Message:  ENOTDIR: not a directory, stat 'data/ledger/2026-08-29/…edn'
 ```

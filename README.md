@@ -172,21 +172,21 @@ network pull) share this one gate.
 
 ```sh
 # refuses, no network call:
-nbb --classpath src scripts/resolve_tick.cljs
+kbb --backend sci --classpath src scripts/resolve_tick.cljs
 
 # one bounded live tick against Tranco (200 domains by default):
-DNS_RESOLVER_OPERATOR_GATE=open nbb --classpath src scripts/resolve_tick.cljs --live
+DNS_RESOLVER_OPERATOR_GATE=open kbb --backend sci --classpath src scripts/resolve_tick.cljs --live
 
 # refresh the Common Crawl cache first (893MB download, several minutes;
 # --limit N for a quick smoke test instead of the full ~120M-line file):
-DNS_RESOLVER_OPERATOR_GATE=open nbb --classpath src scripts/refresh_cc_domains.cljs --live [--limit N]
+DNS_RESOLVER_OPERATOR_GATE=open kbb --backend sci --classpath src scripts/refresh_cc_domains.cljs --live [--limit N]
 
 # then tick against it (600s time budget, concurrency 150, split across 2
 # resolvers, by default — see "Parallelism, request rate" above):
-DNS_RESOLVER_OPERATOR_GATE=open nbb --classpath src scripts/resolve_tick.cljs --live --source commoncrawl
+DNS_RESOLVER_OPERATOR_GATE=open kbb --backend sci --classpath src scripts/resolve_tick.cljs --live --source commoncrawl
 
 # ledger (all ticks so far, both sources) -> R2 Data Catalog:
-nbb --classpath src scripts/export_and_sync.cljs --root <path to com-junkawasaki/root>
+kbb --backend sci --classpath src scripts/export_and_sync.cljs --root <path to com-junkawasaki/root>
 ```
 
 ## Layout
