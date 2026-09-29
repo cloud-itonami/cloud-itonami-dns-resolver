@@ -28,7 +28,7 @@
          pool (--concurrency) split round-robin across two resolvers
          (Google + Cloudflare — see doh-resolvers below), same JSON API
          shape app-hyakka's collect-dns! already uses
-      -> one dated EDN ledger file (git, source of truth — CLAUDE.md
+      -> one dated EDN ledger file (git, source of truth — AGENTS.md
          「消して再構築できるか」: this ledger is the premise, R2/Iceberg
          is a rebuildable projection of it, never the other way round)
 

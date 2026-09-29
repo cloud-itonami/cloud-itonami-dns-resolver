@@ -80,7 +80,7 @@ identically.
 > 2026-09-01: the missing-`--live` arm exits **0**, the missing-env-gate arm
 > exits **2**. So a wrapper that only checks `$?` cannot tell "refused to
 > run" from "ran and collected nothing" on the first arm — the failure
-> mode CLAUDE.md's 検査を書く前の6問 #2 names, and the same one this
+> mode AGENTS.md's 検査を書く前の6問 #2 names, and the same one this
 > repo's own README invokes when it explains why a dead domain still gets a
 > `record_type = "NONE"` row.
 >

@@ -6,7 +6,7 @@
   com-junkawasaki/org-gleif-projections and app-hyakka's ASN/prefix data
   already land through, per 90-docs/adr/2608280100 and 2608280900).
 
-  THIS IS A PROJECTION, NOT A PREMISE (CLAUDE.md 「消して再構築できるか」):
+  THIS IS A PROJECTION, NOT A PREMISE (AGENTS.md 「消して再構築できるか」):
   data/ledger/**/*.edn is the source; this script dedups by :resolution/id
   (last file wins) and rebuilds `cloud_itonami.dns_resolution`. Since
   2026-08-29 the Iceberg side is kept current via `mode: upsert` (see
@@ -208,7 +208,7 @@
      independently REFUSES any spec asking for a non-overwrite `mode`
      when that flag is absent. Both directions were tested against an
      actual pre-change loader pulled from git.
-     The general shape is one CLAUDE.md already names: an operation that
+     The general shape is one AGENTS.md already names: an operation that
      could not do what was asked returned the same success-looking result
      as one that did. Silently falling back to the destructive default is
      the worst possible reading of an unknown option.
@@ -265,7 +265,7 @@
 
 ;; djb2-xor-variant string hash, masked to a byte at the end (n-shards is
 ;; exactly 256) so the shard index is always 0-255 regardless of the
-;; sign JS's 32-bit bitwise ops leave `h` in — matches CLAUDE.md's own
+;; sign JS's 32-bit bitwise ops leave `h` in — matches AGENTS.md's own
 ;; discipline of not fabricating "close enough" numbers: this hash is
 ;; deterministic per id, which is the only property dedup needs.
 (defn shard-of [id]
