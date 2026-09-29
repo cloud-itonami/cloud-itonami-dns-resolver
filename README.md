@@ -38,7 +38,7 @@ sources" below for the actual numbers.
 **Does not claim completeness.** A domain resolving `NONE` across all 4
 record types still gets one row (`record_type = "NONE"`) — "checked, found
 nothing" and "never checked" must not look the same in the table
-(CLAUDE.md's 検査を書く前の6問, #1).
+(AGENTS.md's 検査を書く前の6問, #1).
 
 ## Why R2 Data Catalog, not a claim-graph wiki
 
@@ -151,7 +151,7 @@ domain list acquisition (source-specific — see table above)
   -> DNS-over-HTTPS A/AAAA/MX/NS lookups (dns.google/resolve — the same
      transport app-hyakka's collect-dns! already uses)
   -> one dated EDN ledger file (data/ledger/<date>/<tick-id>.edn, git —
-     THE source of truth; CLAUDE.md 「消して再構築できるか」)
+     THE source of truth; AGENTS.md 「消して再構築できるか」)
   -> export_and_sync.cljs: ledger -> JSON -> cloud_itonami.dns_resolution
      (Iceberg, rebuildable projection, never the other way round)
 ```

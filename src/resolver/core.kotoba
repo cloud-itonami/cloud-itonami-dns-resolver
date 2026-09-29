@@ -31,7 +31,7 @@
   \"<id>\\t<tld.reversed.labels>\\t<n>\" -> {:domain str} or nil for a
   malformed line — never throws. A streaming parse over ~10^8 lines must
   not die on one bad row; the caller counts skipped lines itself if it
-  wants that measured (CLAUDE.md 検査を書く前の 6 問, #4)."
+  wants that measured (AGENTS.md 検査を書く前の 6 問, #4)."
   [line]
   (let [parts (str/split (str/trim line) #"\t")]
     (when (= 3 (count parts))
@@ -44,7 +44,7 @@
   ledger rows. A domain with zero answers across all 4 record types still
   gets ONE row (`:resolution/record-type \"NONE\"`) — evidence floor:
   'checked, nothing there' must not look the same as 'never checked'
-  (CLAUDE.md 検査を書く前の 6 問, #1). `source`/`source-date` are carried
+  (AGENTS.md 検査を書く前の 6 問, #1). `source`/`source-date` are carried
   by the caller (Tranco vs. Common Crawl vs. whatever gets added next) —
   this function does not know or care which list a domain came from."
   [{:keys [source source-date tick-id resolved-at]} {:keys [domain rank results]}]
